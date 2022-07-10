@@ -1,0 +1,4 @@
+tab_spaces = 4
+hard_tabs = false
+max_width = 80
+use_samll_use_small_heuristics = "max"
