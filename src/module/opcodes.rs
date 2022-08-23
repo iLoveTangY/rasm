@@ -6,7 +6,7 @@ pub mod opcodes {
     use strum_macros::AsRefStr;
 
     #[derive(
-        AsRefStr, TryFromPrimitive, IntoPrimitive, PartialEq, PartialOrd,
+        AsRefStr, TryFromPrimitive, IntoPrimitive, PartialEq, PartialOrd, Copy, Clone
     )]
     #[repr(u8)]
     pub enum OpCode {

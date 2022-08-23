@@ -10,9 +10,12 @@ pub use instruction::instruction::{
     BlockType, BLOCK_TYPE_EMPTY, BLOCK_TYPE_F32, BLOCK_TYPE_F64,
     BLOCK_TYPE_I32, BLOCK_TYPE_I64,
 };
+pub use module::module::*;
 pub use module::module::ExportDesc;
 pub use module::module::Expr;
 pub use module::module::ImportDesc;
 pub use module::module::Module;
 pub use module::module::WasmReader;
+pub use module::module::Code;
+pub use module::module::MemType;
 pub use opcodes::opcodes::OpCode;

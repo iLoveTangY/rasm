@@ -86,9 +86,10 @@ pub mod module {
     }
 
     // Limits 类型用于描述表的元素数量或者内存页数的上下限
+    #[derive(Clone, Copy)]
     pub struct Limits {
-        min: u32,
-        max: Option<u32>,
+        pub min: usize,
+        pub max: Option<usize>,
     }
 
     impl fmt::Display for Limits {
@@ -97,6 +98,9 @@ pub mod module {
         }
     }
 
+    // 内存每页最大大小和最大的页数
+    pub const PAGE_SIZE: usize = 65536;  // 64kB
+    pub const MAX_PAGE_COUNT: usize = 65536;  // 2^16
     // 内存类型只需描述内存的页数限制，定义成Limits的别名即可
     pub type MemType = Limits;
 
@@ -587,9 +591,9 @@ pub mod module {
             let max = if tag == 0x00 {
                 None
             } else {
-                Some(self.read_var_u32())
+                Some(self.read_var_u32() as usize)
             };
-            Limits { min, max }
+            Limits { min: min as usize, max }
         }
 
         fn read_table_type(&mut self) -> TableType {

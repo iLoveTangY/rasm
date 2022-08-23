@@ -9,3 +9,5 @@ edition = "2021"
 num_enum = "0.2.3"
 strum = "0.24"
 strum_macros = "0.24"
+cargo-edit = "0.10.4"
+clap = { version = "3.2.16", features = ["derive"] }
