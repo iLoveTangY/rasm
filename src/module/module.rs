@@ -99,9 +99,9 @@ pub mod module {
     }
 
     // 内存每页最大大小和最大的页数
-    pub const PAGE_SIZE: usize = 65536;  // 64kB
-    pub const MAX_PAGE_COUNT: usize = 65536;  // 2^16
-    // 内存类型只需描述内存的页数限制，定义成Limits的别名即可
+    pub const PAGE_SIZE: usize = 65536; // 64kB
+    pub const MAX_PAGE_COUNT: usize = 65536; // 2^16
+                                             // 内存类型只需描述内存的页数限制，定义成Limits的别名即可
     pub type MemType = Limits;
 
     // 表类型需要描述表的元素类型以及元素数量的限制。Wasm规范只定义了一种元素类型，即函数引用，不过已经有提案建议增加其他元素类型
@@ -593,7 +593,10 @@ pub mod module {
             } else {
                 Some(self.read_var_u32() as usize)
             };
-            Limits { min: min as usize, max }
+            Limits {
+                min: min as usize,
+                max,
+            }
         }
 
         fn read_table_type(&mut self) -> TableType {

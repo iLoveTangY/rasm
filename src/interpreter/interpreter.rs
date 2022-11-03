@@ -1,6 +1,5 @@
 pub mod interpreter {
     use std::any::Any;
-    use std::cell::RefCell;
 
     use crate::module::*;
 
@@ -82,7 +81,10 @@ pub mod interpreter {
     impl Memory {
         fn new(mem_type: MemType) -> Memory {
             let min_page_size = mem_type.min;
-            Memory { mem_type, data: vec![0; (min_page_size * PAGE_SIZE) as usize] }
+            Memory {
+                mem_type,
+                data: vec![0; (min_page_size * PAGE_SIZE) as usize],
+            }
         }
 
         /// 已分配内存的页数
@@ -100,21 +102,21 @@ pub mod interpreter {
             if old_size + n > max_page_count {
                 return 0xFFFFFFFF;
             }
-            self.data.extend(vec![0; n].iter());
+            self.data.extend(vec![0; n * PAGE_SIZE].iter());
             old_size
         }
 
-        fn read(&self, offset: usize, buf: &mut [u8]) {
+        fn read(&mut self, offset: usize, buf: &mut [u8]) {
             self.check_offset(offset, buf.len());
-            buf.copy_from_slice(&self.data[offset..]);
+            buf.copy_from_slice(&self.data[offset..offset + buf.len()]);
         }
 
         fn write(&mut self, offset: usize, data: &[u8]) {
             self.check_offset(offset, data.len());
-            self.data[offset..].copy_from_slice(data);
+            self.data[offset..offset + data.len()].copy_from_slice(data);
         }
 
-        fn check_offset(&self, offset: usize, length: usize) {
+        fn check_offset(&mut self, offset: usize, length: usize) {
             if self.data.len() - length < offset {
                 panic!("Memory out of bounds");
             }
@@ -122,7 +124,7 @@ pub mod interpreter {
     }
 
     pub struct VM<'a> {
-        operand_stack: RefCell<OperandStack>,
+        operand_stack: OperandStack,
         module: &'a Module,
         memory: Memory,
     }
@@ -135,7 +137,7 @@ pub mod interpreter {
             } else {
                 memory = Memory::new(MemType { min: 0, max: None });
             }
-            let operand_stack = RefCell::new(OperandStack::new());
+            let operand_stack = OperandStack::new();
             VM {
                 operand_stack,
                 module,
@@ -143,23 +145,33 @@ pub mod interpreter {
             }
         }
 
+        fn init_memory(&mut self) {
+            for data in &self.module.data_sec {
+                for instr in &data.offset {
+                    self.exec_instr(instr);
+                }
+                self.memory.write(self.operand_stack.pop_u64() as usize, &data.init[..]);
+            }
+        }
+
         pub fn exec_main(module: &Module) {
-            let vm = VM::new(module);
+            let mut vm = VM::new(module);
             if let Some(start_sec_id) = module.start_sec {
+                vm.init_memory();
                 vm.exec_code(start_sec_id as usize - module.import_sec.len());
             } else {
                 println!("No start sec!");
             }
         }
 
-        fn exec_code(&self, idx: usize) {
+        fn exec_code(&mut self, idx: usize) {
             let code = &self.module.code_sec[idx];
             for instr in &code.expr {
                 self.exec_instr(instr);
             }
         }
 
-        fn exec_instr(&self, instr: &Instruction) {
+        fn exec_instr(&mut self, instr: &Instruction) {
             match instr.opcode {
                 OpCode::Call => self.call(&instr.args),
                 OpCode::Drop => self.drop_value(&instr.args),
@@ -304,959 +316,1008 @@ pub mod interpreter {
                 OpCode::F64ReinterpretI64 => {
                     self.f64_reinterpret_i64(&instr.args)
                 }
+                OpCode::MemorySize => self.memory_size(&instr.args),
+                OpCode::MemoryGrow => self.memory_grow(&instr.args),
+                OpCode::I32Load => self.i32_load(&instr.args),
+                OpCode::I64Load => self.i64_load(&instr.args),
+                OpCode::F32Load => self.f32_load(&instr.args),
+                OpCode::F64Load => self.f64_load(&instr.args),
+                OpCode::I32Load8S => self.i32_load_8s(&instr.args),
+                OpCode::I32Load8U => self.i32_load_8u(&instr.args),
+                OpCode::I32Load16S => self.i32_load_16s(&instr.args),
+                OpCode::I32Load16U => self.i32_load_16u(&instr.args),
+                OpCode::I64Load8S => self.i64_load_8s(&instr.args),
+                OpCode::I64Load8U => self.i64_load_8u(&instr.args),
+                OpCode::I64Load16S => self.i64_load_16s(&instr.args),
+                OpCode::I64Load16U => self.i64_load_16u(&instr.args),
+                OpCode::I64Load32S => self.i64_load_32s(&instr.args),
+                OpCode::I64Load32U => self.i64_load_32u(&instr.args),
+                OpCode::I32Store => self.i32_store(&instr.args),
+                OpCode::I64Store => self.i64_store(&instr.args),
+                OpCode::F32Store => self.f32_store(&instr.args),
+                OpCode::F64Store => self.f64_store(&instr.args),
+                OpCode::I32Store8 => self.i32_store_8(&instr.args),
+                OpCode::I32Store16 => self.i32_store_16(&instr.args),
+                OpCode::I64Store8 => self.i64_store_8(&instr.args),
+                OpCode::I64Store16 => self.i64_store_16(&instr.args),
+                OpCode::I64Store32 => self.i64_store_32(&instr.args),
                 _ => {}
             }
         }
 
         // dummy call
-        fn call(&self, args: &Option<Box<dyn Any>>) {
+        fn call(&mut self, args: &Option<Box<dyn Any>>) {
             let idx = args.as_ref().unwrap().downcast_ref::<u32>().unwrap();
             let name = &self.module.import_sec[*idx as usize].member_name;
-            let mut stack = self.operand_stack.borrow_mut();
 
             match name.as_str() {
-                "assert_true" => assert_eq!(stack.pop_bool(), true),
-                "assert_false" => assert_eq!(stack.pop_bool(), false),
-                "assert_eq_i32" => assert_eq!(stack.pop_u32(), stack.pop_u32()),
-                "assert_eq_i64" => assert_eq!(stack.pop_u64(), stack.pop_u64()),
-                "assert_eq_f32" => assert_eq!(stack.pop_f32(), stack.pop_f32()),
-                "assert_eq_f64" => assert_eq!(stack.pop_f64(), stack.pop_f64()),
+                "assert_true" => {
+                    assert_eq!(self.operand_stack.pop_bool(), true)
+                }
+                "assert_false" => {
+                    assert_eq!(self.operand_stack.pop_bool(), false)
+                }
+                "assert_eq_i32" =>  {
+                    println!("call i32 assert");
+                    assert_eq!(
+                    self.operand_stack.pop_u32(),
+                    self.operand_stack.pop_u32()
+                )}
+                "assert_eq_i64" => assert_eq!(
+                    self.operand_stack.pop_u64(),
+                    self.operand_stack.pop_u64()
+                ),
+                "assert_eq_f32" => assert_eq!(
+                    self.operand_stack.pop_f32(),
+                    self.operand_stack.pop_f32()
+                ),
+                "assert_eq_f64" => assert_eq!(
+                    self.operand_stack.pop_f64(),
+                    self.operand_stack.pop_f64()
+                ),
                 _ => {}
             }
         }
 
         // 参数指令实现
-        fn drop_value(&self, _arg: &Option<Box<dyn Any>>) {
-            self.operand_stack.borrow_mut().pop_u64();
+        fn drop_value(&mut self, _arg: &Option<Box<dyn Any>>) {
+            self.operand_stack.pop_u64();
         }
 
-        fn select(&self, _arg: &Option<Box<dyn Any>>) {
-            let mut op_stack = self.operand_stack.borrow_mut();
-            let v1 = op_stack.pop_bool();
-            let v2 = op_stack.pop_u64();
-            let v3 = op_stack.pop_u64();
+        fn select(&mut self, _arg: &Option<Box<dyn Any>>) {
+            let v1 = self.operand_stack.pop_bool();
+            let v2 = self.operand_stack.pop_u64();
+            let v3 = self.operand_stack.pop_u64();
             if v1 {
-                op_stack.push_u64(v3);
+                self.operand_stack.push_u64(v3);
             } else {
-                op_stack.push_u64(v2);
+                self.operand_stack.push_u64(v2);
             }
         }
 
         // 数值指令实现
         // part 1: 常量指令，共4条
-        fn i32_const(&self, args: &Option<Box<dyn Any>>) {
+        fn i32_const(&mut self, args: &Option<Box<dyn Any>>) {
             let arg = args.as_ref().unwrap().downcast_ref::<i32>().unwrap();
-            self.operand_stack.borrow_mut().push_i32(*arg);
+            self.operand_stack.push_i32(*arg);
         }
 
-        fn i64_const(&self, args: &Option<Box<dyn Any>>) {
+        fn i64_const(&mut self, args: &Option<Box<dyn Any>>) {
             let arg = args.as_ref().unwrap().downcast_ref::<i64>().unwrap();
-            self.operand_stack.borrow_mut().push_i64(*arg);
+            self.operand_stack.push_i64(*arg);
         }
 
-        fn f32_const(&self, args: &Option<Box<dyn Any>>) {
+        fn f32_const(&mut self, args: &Option<Box<dyn Any>>) {
             let arg = args.as_ref().unwrap().downcast_ref::<f32>().unwrap();
-            self.operand_stack.borrow_mut().push_f32(*arg);
+            self.operand_stack.push_f32(*arg);
         }
 
-        fn f64_const(&self, args: &Option<Box<dyn Any>>) {
+        fn f64_const(&mut self, args: &Option<Box<dyn Any>>) {
             let arg = args.as_ref().unwrap().downcast_ref::<f64>().unwrap();
-            self.operand_stack.borrow_mut().push_f64(*arg);
+            self.operand_stack.push_f64(*arg);
         }
 
         // part2: 测试指令
-        fn i32_eqz(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let value = stack.pop_i32();
-            stack.push_bool(value == 0);
+        fn i32_eqz(&mut self, _args: &Option<Box<dyn Any>>) {
+            let value = self.operand_stack.pop_i32();
+            self.operand_stack.push_bool(value == 0);
         }
 
-        fn i64_eqz(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let value = stack.pop_i64();
-            stack.push_bool(value == 0);
+        fn i64_eqz(&mut self, _args: &Option<Box<dyn Any>>) {
+            let value = self.operand_stack.pop_i64();
+            self.operand_stack.push_bool(value == 0);
         }
 
         // part2: 比较指令，共32条
         // i32 相关
-        fn i32_eq(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_bool(v1 == v2);
+        fn i32_eq(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_bool(v1 == v2);
         }
 
-        fn i32_neq(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_bool(v1 != v2);
+        fn i32_neq(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_bool(v1 != v2);
         }
 
-        fn i32_lts(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_bool(v1 < v2);
+        fn i32_lts(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_bool(v1 < v2);
         }
 
-        fn i32_ltu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_bool(v1 < v2);
+        fn i32_ltu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_bool(v1 < v2);
         }
 
-        fn i32_gts(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_bool(v1 > v2);
+        fn i32_gts(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_bool(v1 > v2);
         }
 
-        fn i32_gtu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_bool(v1 > v2);
+        fn i32_gtu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_bool(v1 > v2);
         }
 
-        fn i32_les(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_bool(v1 <= v2);
+        fn i32_les(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_bool(v1 <= v2);
         }
 
-        fn i32_leu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_bool(v1 <= v2);
+        fn i32_leu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_bool(v1 <= v2);
         }
 
-        fn i32_ges(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_bool(v1 >= v2);
+        fn i32_ges(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_bool(v1 >= v2);
         }
 
-        fn i32_geu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_bool(v1 >= v2);
+        fn i32_geu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_bool(v1 >= v2);
         }
 
         // i64 相关
-        fn i64_eq(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_bool(v1 == v2);
+        fn i64_eq(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_bool(v1 == v2);
         }
 
-        fn i64_neq(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_bool(v1 != v2);
+        fn i64_neq(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_bool(v1 != v2);
         }
 
-        fn i64_lts(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_bool(v1 < v2);
+        fn i64_lts(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_bool(v1 < v2);
         }
 
-        fn i64_ltu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_bool(v1 < v2);
+        fn i64_ltu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_bool(v1 < v2);
         }
 
-        fn i64_gts(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_bool(v1 > v2);
+        fn i64_gts(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_bool(v1 > v2);
         }
 
-        fn i64_gtu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_bool(v1 > v2);
+        fn i64_gtu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_bool(v1 > v2);
         }
 
-        fn i64_les(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_bool(v1 <= v2);
+        fn i64_les(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_bool(v1 <= v2);
         }
 
-        fn i64_leu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_bool(v1 <= v2);
+        fn i64_leu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_bool(v1 <= v2);
         }
 
-        fn i64_ges(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_bool(v1 >= v2);
+        fn i64_ges(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_bool(v1 >= v2);
         }
 
-        fn i64_geu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_bool(v1 >= v2);
+        fn i64_geu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_bool(v1 >= v2);
         }
 
         // f32 相关
-        fn f32_eq(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_bool(v1 == v2);
+        fn f32_eq(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_bool(v1 == v2);
         }
 
-        fn f32_neq(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_bool(v1 != v2);
+        fn f32_neq(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_bool(v1 != v2);
         }
 
-        fn f32_lt(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_bool(v1 < v2);
+        fn f32_lt(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_bool(v1 < v2);
         }
 
-        fn f32_gt(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_bool(v1 > v2);
+        fn f32_gt(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_bool(v1 > v2);
         }
 
-        fn f32_le(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_bool(v1 <= v2);
+        fn f32_le(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_bool(v1 <= v2);
         }
 
-        fn f32_ge(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_bool(v1 >= v2);
+        fn f32_ge(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_bool(v1 >= v2);
         }
 
         // f64 相关
-        fn f64_eq(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_bool(v1 == v2);
+        fn f64_eq(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_bool(v1 == v2);
         }
 
-        fn f64_neq(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_bool(v1 != v2);
+        fn f64_neq(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_bool(v1 != v2);
         }
 
-        fn f64_lt(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_bool(v1 < v2);
+        fn f64_lt(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_bool(v1 < v2);
         }
 
-        fn f64_gt(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_bool(v1 > v2);
+        fn f64_gt(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_bool(v1 > v2);
         }
 
-        fn f64_le(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_bool(v1 <= v2);
+        fn f64_le(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_bool(v1 <= v2);
         }
 
-        fn f64_ge(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_bool(v1 >= v2);
+        fn f64_ge(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_bool(v1 >= v2);
         }
 
         // 一元算术指令，共6条
-        fn i32_clz(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_u32();
-            stack.push_u32(val.leading_zeros());
+        fn i32_clz(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u32();
+            self.operand_stack.push_u32(val.leading_zeros());
         }
 
-        fn i32_ctz(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_u32();
-            stack.push_u32(val.trailing_zeros());
+        fn i32_ctz(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u32();
+            self.operand_stack.push_u32(val.trailing_zeros());
         }
 
-        fn i32_pop_cnt(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_u32();
-            stack.push_u32(val.count_ones());
+        fn i32_pop_cnt(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u32();
+            self.operand_stack.push_u32(val.count_ones());
         }
 
-        fn i64_clz(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_u64();
-            stack.push_u32(val.leading_zeros());
+        fn i64_clz(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u64();
+            self.operand_stack.push_u32(val.leading_zeros());
         }
 
-        fn i64_ctz(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_u64();
-            stack.push_u32(val.trailing_zeros());
+        fn i64_ctz(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u64();
+            self.operand_stack.push_u32(val.trailing_zeros());
         }
 
-        fn i64_pop_cnt(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_u64();
-            stack.push_u32(val.count_ones());
+        fn i64_pop_cnt(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u64();
+            self.operand_stack.push_u32(val.count_ones());
         }
 
-        fn f32_abs(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f32();
-            stack.push_f32(val.abs());
+        fn f32_abs(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(val.abs());
         }
 
-        fn f32_neg(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f32();
-            stack.push_f32(-val);
+        fn f32_neg(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(-val);
         }
 
-        fn f32_ceil(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f32();
-            stack.push_f32(val.ceil());
+        fn f32_ceil(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(val.ceil());
         }
 
-        fn f32_floor(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f32();
-            stack.push_f32(val.floor());
+        fn f32_floor(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(val.floor());
         }
 
-        fn f32_trunc(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f32();
-            stack.push_f32(val.trunc());
+        fn f32_trunc(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(val.trunc());
         }
 
-        fn f32_nearest(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f32();
-            stack.push_f32(val.round());
+        fn f32_nearest(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(val.round());
         }
 
-        fn f32_sqrt(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f32();
-            stack.push_f32(val.sqrt());
+        fn f32_sqrt(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(val.sqrt());
         }
 
-        fn f64_abs(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f64();
-            stack.push_f64(val.abs());
+        fn f64_abs(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(val.abs());
         }
 
-        fn f64_neg(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f64();
-            stack.push_f64(-val);
+        fn f64_neg(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(-val);
         }
 
-        fn f64_ceil(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f64();
-            stack.push_f64(val.ceil());
+        fn f64_ceil(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(val.ceil());
         }
 
-        fn f64_floor(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f64();
-            stack.push_f64(val.floor());
+        fn f64_floor(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(val.floor());
         }
 
-        fn f64_trunc(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f64();
-            stack.push_f64(val.trunc());
+        fn f64_trunc(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(val.trunc());
         }
 
-        fn f64_nearest(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f64();
-            stack.push_f64(val.round());
+        fn f64_nearest(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(val.round());
         }
 
-        fn f64_sqrt(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let val = stack.pop_f64();
-            stack.push_f64(val.sqrt());
+        fn f64_sqrt(&mut self, _args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(val.sqrt());
         }
 
         // 二元算术指令
         // part1: 整形算术运算，共30条
-        fn i32_add(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 + v2);
+        fn i32_add(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 + v2);
         }
 
-        fn i32_sub(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 - v2);
+        fn i32_sub(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 - v2);
         }
 
-        fn i32_mul(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 * v2);
+        fn i32_mul(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 * v2);
         }
 
-        fn i32_divs(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 / v2);
+        fn i32_divs(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 / v2);
         }
 
-        fn i32_divu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_u32(v1 / v2);
+        fn i32_divu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_u32(v1 / v2);
         }
 
-        fn i32_rems(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 % v2);
+        fn i32_rems(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 % v2);
         }
 
-        fn i32_remu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_u32(v1 % v2);
+        fn i32_remu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_u32(v1 % v2);
         }
 
-        fn i32_and(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 & v2);
+        fn i32_and(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 & v2);
         }
 
-        fn i32_or(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 | v2);
+        fn i32_or(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 | v2);
         }
 
-        fn i32_xor(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 ^ v2);
+        fn i32_xor(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 ^ v2);
         }
 
-        fn i32_shl(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 << (v2 % 64));
+        fn i32_shl(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 << (v2 % 64));
         }
 
-        fn i32_shrs(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1 >> (v2 % 64));
+        fn i32_shrs(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1 >> (v2 % 64));
         }
 
-        fn i32_shru(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u32();
-            let v1 = stack.pop_u32();
-            stack.push_u32(v1 >> (v2 % 64));
+        fn i32_shru(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u32();
+            let v1 = self.operand_stack.pop_u32();
+            self.operand_stack.push_u32(v1 >> (v2 % 64));
         }
 
-        fn i32_rotl(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1.rotate_left(v2 as u32));
+        fn i32_rotl(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1.rotate_left(v2 as u32));
         }
 
-        fn i32_rotr(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i32();
-            let v1 = stack.pop_i32();
-            stack.push_i32(v1.rotate_right(v2 as u32));
+        fn i32_rotr(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i32();
+            let v1 = self.operand_stack.pop_i32();
+            self.operand_stack.push_i32(v1.rotate_right(v2 as u32));
         }
 
-        fn i64_add(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 + v2);
+        fn i64_add(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 + v2);
         }
 
-        fn i64_sub(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 - v2);
+        fn i64_sub(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 - v2);
         }
 
-        fn i64_mul(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 * v2);
+        fn i64_mul(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 * v2);
         }
 
-        fn i64_divs(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 / v2);
+        fn i64_divs(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 / v2);
         }
 
-        fn i64_divu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_u64(v1 / v2);
+        fn i64_divu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_u64(v1 / v2);
         }
 
-        fn i64_rems(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 % v2);
+        fn i64_rems(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 % v2);
         }
 
-        fn i64_remu(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_u64(v1 % v2);
+        fn i64_remu(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_u64(v1 % v2);
         }
 
-        fn i64_and(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 & v2);
+        fn i64_and(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 & v2);
         }
 
-        fn i64_or(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 | v2);
+        fn i64_or(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 | v2);
         }
 
-        fn i64_xor(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 ^ v2);
+        fn i64_xor(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 ^ v2);
         }
 
-        fn i64_shl(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 << (v2 % 64));
+        fn i64_shl(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 << (v2 % 64));
         }
 
-        fn i64_shrs(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1 >> (v2 % 64));
+        fn i64_shrs(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1 >> (v2 % 64));
         }
 
-        fn i64_shru(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_u64();
-            let v1 = stack.pop_u64();
-            stack.push_u64(v1 >> (v2 % 64));
+        fn i64_shru(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_u64();
+            let v1 = self.operand_stack.pop_u64();
+            self.operand_stack.push_u64(v1 >> (v2 % 64));
         }
 
-        fn i64_rotl(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1.rotate_left(v2 as u32));
+        fn i64_rotl(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1.rotate_left(v2 as u32));
         }
 
-        fn i64_rotr(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_i64();
-            let v1 = stack.pop_i64();
-            stack.push_i64(v1.rotate_right(v2 as u32));
+        fn i64_rotr(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_i64();
+            let v1 = self.operand_stack.pop_i64();
+            self.operand_stack.push_i64(v1.rotate_right(v2 as u32));
         }
 
         // part2: 浮点算术运算，共14条
-        fn f32_add(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_f32(v1 + v2);
+        fn f32_add(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(v1 + v2);
         }
 
-        fn f32_sub(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_f32(v1 - v2);
+        fn f32_sub(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(v1 - v2);
         }
 
-        fn f32_mul(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_f32(v1 * v2);
+        fn f32_mul(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(v1 * v2);
         }
 
-        fn f32_div(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_f32(v1 / v2);
+        fn f32_div(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(v1 / v2);
         }
 
-        fn f32_min(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_f32(v1.min(v2));
+        fn f32_min(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(v1.min(v2));
         }
 
-        fn f32_max(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_f32(v1.max(v2));
+        fn f32_max(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(v1.max(v2));
         }
 
-        fn f32_copy_sign(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f32();
-            let v1 = stack.pop_f32();
-            stack.push_f32(v1.copysign(v2));
+        fn f32_copy_sign(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f32();
+            let v1 = self.operand_stack.pop_f32();
+            self.operand_stack.push_f32(v1.copysign(v2));
         }
 
-        fn f64_add(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_f64(v1 + v2);
+        fn f64_add(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(v1 + v2);
         }
 
-        fn f64_sub(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_f64(v1 - v2);
+        fn f64_sub(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(v1 - v2);
         }
 
-        fn f64_mul(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_f64(v1 * v2);
+        fn f64_mul(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(v1 * v2);
         }
 
-        fn f64_div(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_f64(v1 / v2);
+        fn f64_div(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(v1 / v2);
         }
 
-        fn f64_min(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_f64(v1.min(v2));
+        fn f64_min(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(v1.min(v2));
         }
 
-        fn f64_max(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_f64(v1.max(v2));
+        fn f64_max(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(v1.max(v2));
         }
 
-        fn f64_copy_sign(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v2 = stack.pop_f64();
-            let v1 = stack.pop_f64();
-            stack.push_f64(v1.copysign(v2));
+        fn f64_copy_sign(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v2 = self.operand_stack.pop_f64();
+            let v1 = self.operand_stack.pop_f64();
+            self.operand_stack.push_f64(v1.copysign(v2));
         }
 
         // 类型转换指令
         // part1: 整数截断，共1条指令
-        fn i32_wrap_i64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_u64();
-            stack.push_u32(v as u32);
+        fn i32_wrap_i64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_u64();
+            self.operand_stack.push_u32(v as u32);
         }
         // part2: 整数拉升，共7条指令
-        fn i64_extend_i32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i32();
-            stack.push_u64(v as u64);
+        fn i64_extend_i32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i32();
+            self.operand_stack.push_u64(v as u64);
         }
 
-        fn i64_extend_u32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_u32();
-            stack.push_u64(v as u64);
+        fn i64_extend_u32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_u32();
+            self.operand_stack.push_u64(v as u64);
         }
 
-        fn i32_extend_8(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i32() as i8;
-            stack.push_i32(v as i32);
+        fn i32_extend_8(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i32() as i8;
+            self.operand_stack.push_i32(v as i32);
         }
 
-        fn i32_extend_16(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i32() as i16;
-            stack.push_i32(v as i32);
+        fn i32_extend_16(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i32() as i16;
+            self.operand_stack.push_i32(v as i32);
         }
 
-        fn i64_extend_8(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i64() as i8;
-            stack.push_i64(v as i64);
+        fn i64_extend_8(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i64() as i8;
+            self.operand_stack.push_i64(v as i64);
         }
 
-        fn i64_extend_16(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i64() as i16;
-            stack.push_i64(v as i64);
+        fn i64_extend_16(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i64() as i16;
+            self.operand_stack.push_i64(v as i64);
         }
 
-        fn i64_extend_32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i64() as i32;
-            stack.push_i64(v as i64);
+        fn i64_extend_32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i64() as i32;
+            self.operand_stack.push_i64(v as i64);
         }
         // part3: 浮点数截断，共9条指令
-        fn i32_trunc_f32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f32();
-            stack.push_i32(v.trunc() as i32);
+        fn i32_trunc_f32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f32();
+            self.operand_stack.push_i32(v.trunc() as i32);
         }
 
-        fn u32_trunc_f32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f32();
-            stack.push_u32(v.trunc() as u32);
+        fn u32_trunc_f32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f32();
+            self.operand_stack.push_u32(v.trunc() as u32);
         }
 
-        fn i32_trunc_f64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f64();
-            stack.push_i32(v.trunc() as i32);
+        fn i32_trunc_f64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f64();
+            self.operand_stack.push_i32(v.trunc() as i32);
         }
 
-        fn u32_trunc_f64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f64();
-            stack.push_u32(v.trunc() as u32);
+        fn u32_trunc_f64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f64();
+            self.operand_stack.push_u32(v.trunc() as u32);
         }
 
-        fn i64_trunc_f32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f32();
-            stack.push_i64(v.trunc() as i64);
+        fn i64_trunc_f32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f32();
+            self.operand_stack.push_i64(v.trunc() as i64);
         }
 
-        fn u64_trunc_f32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f32();
-            stack.push_u64(v.trunc() as u64);
+        fn u64_trunc_f32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f32();
+            self.operand_stack.push_u64(v.trunc() as u64);
         }
 
-        fn i64_trunc_f64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f64();
-            stack.push_i64(v.trunc() as i64);
+        fn i64_trunc_f64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f64();
+            self.operand_stack.push_i64(v.trunc() as i64);
         }
 
-        fn u64_trunc_f64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f64();
-            stack.push_u64(v.trunc() as u64);
+        fn u64_trunc_f64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f64();
+            self.operand_stack.push_u64(v.trunc() as u64);
         }
 
         // part4: 整数转换，共8条指令
-        fn f32_convert_i32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i32();
-            stack.push_f32(v as f32);
+        fn f32_convert_i32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i32();
+            self.operand_stack.push_f32(v as f32);
         }
 
-        fn f32_convert_u32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_u32();
-            stack.push_f32(v as f32);
+        fn f32_convert_u32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_u32();
+            self.operand_stack.push_f32(v as f32);
         }
 
-        fn f32_convert_i64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i64();
-            stack.push_f32(v as f32);
+        fn f32_convert_i64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i64();
+            self.operand_stack.push_f32(v as f32);
         }
 
-        fn f32_convert_u64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_u64();
-            stack.push_f32(v as f32);
+        fn f32_convert_u64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_u64();
+            self.operand_stack.push_f32(v as f32);
         }
 
-        fn f64_convert_i32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i32();
-            stack.push_f64(v as f64);
+        fn f64_convert_i32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i32();
+            self.operand_stack.push_f64(v as f64);
         }
 
-        fn f64_convert_u32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_u32();
-            stack.push_f64(v as f64);
+        fn f64_convert_u32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_u32();
+            self.operand_stack.push_f64(v as f64);
         }
 
-        fn f64_convert_i64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_i64();
-            stack.push_f64(v as f64);
+        fn f64_convert_i64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_i64();
+            self.operand_stack.push_f64(v as f64);
         }
 
-        fn f64_convert_u64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_u64();
-            stack.push_f64(v as f64);
+        fn f64_convert_u64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_u64();
+            self.operand_stack.push_f64(v as f64);
         }
         // part5: 浮点数精度调整，共2条指令
-        fn f32_demote_f64(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f64();
-            stack.push_f32(v as f32);
+        fn f32_demote_f64(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f64();
+            self.operand_stack.push_f32(v as f32);
         }
 
-        fn f64_promote_f32(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            let v = stack.pop_f32();
-            stack.push_f64(v as f64);
+        fn f64_promote_f32(&mut self, _args: &Option<Box<dyn Any>>) {
+            let v = self.operand_stack.pop_f32();
+            self.operand_stack.push_f64(v as f64);
         }
         // part6: 比特位重新解释，共4条指令，只需重新解释类型，无需做任何操作
-        fn i32_reinterpret_f32(&self, _args: &Option<Box<dyn Any>>) {}
-        fn i64_reinterpret_f64(&self, _args: &Option<Box<dyn Any>>) {}
-        fn f32_reinterpret_i32(&self, _args: &Option<Box<dyn Any>>) {}
-        fn f64_reinterpret_i64(&self, _args: &Option<Box<dyn Any>>) {}
+        fn i32_reinterpret_f32(&mut self, _args: &Option<Box<dyn Any>>) {}
+        fn i64_reinterpret_f64(&mut self, _args: &Option<Box<dyn Any>>) {}
+        fn f32_reinterpret_i32(&mut self, _args: &Option<Box<dyn Any>>) {}
+        fn f64_reinterpret_i64(&mut self, _args: &Option<Box<dyn Any>>) {}
 
         // 内存相关指令
         // helper function
-        fn get_offset(&self, args: &Option<Box<dyn Any>>) -> usize {
-            let arg = args.as_ref().unwrap().downcast_ref::<MemArg>().unwrap(); 
-            let mut stack = self.operand_stack.borrow_mut();
+        fn get_offset(&mut self, args: &Option<Box<dyn Any>>) -> usize {
+            let arg = args.as_ref().unwrap().downcast_ref::<MemArg>().unwrap();
             // 动态的操作数偏移量 + 静态的立即数偏移量，结果可能溢出u32，得用u64表示
-            (stack.pop_u32() + arg.offset) as usize
+            self.operand_stack.pop_u32() as usize + arg.offset as usize
         }
 
-        fn read_u8(&self, args: &Option<Box<dyn Any>>) -> u8 {
+        fn read_u8(&mut self, args: &Option<Box<dyn Any>>) -> u8 {
             let offset = self.get_offset(args);
             let mut buf = vec![0u8];
             self.memory.read(offset, &mut buf[..]);
             buf[0]
         }
 
-        fn read_u16(&self, args: &Option<Box<dyn Any>>) -> u16 {
+        fn read_u16(&mut self, args: &Option<Box<dyn Any>>) -> u16 {
             let offset = self.get_offset(args);
-            let mut buf = vec![0u8;2];
+            let mut buf = vec![0u8; 2];
             self.memory.read(offset, &mut buf[..]);
             u16::from_le_bytes(buf.try_into().unwrap())
         }
 
-        fn read_u32(&self, args: &Option<Box<dyn Any>>) -> u32 {
+        fn read_u32(&mut self, args: &Option<Box<dyn Any>>) -> u32 {
             let offset = self.get_offset(args);
-            let mut buf = vec![0u8;4];
+            let mut buf = vec![0u8; 4];
             self.memory.read(offset, &mut buf[..]);
             u32::from_le_bytes(buf.try_into().unwrap())
         }
 
-        fn read_u64(&self, args: &Option<Box<dyn Any>>) -> u64 {
+        fn read_u64(&mut self, args: &Option<Box<dyn Any>>) -> u64 {
             let offset = self.get_offset(args);
-            let mut buf = vec![0u8;8];
+            let mut buf = vec![0u8; 8];
             self.memory.read(offset, &mut buf[..]);
             u64::from_le_bytes(buf.try_into().unwrap())
         }
 
-        // part1: size 和 grow
-        fn memory_size(&self, _args: &Option<Box<dyn Any>>) {
-            let mut stack = self.operand_stack.borrow_mut();
-            stack.push_u32(self.memory.size() as u32);
+        fn write_u8(&mut self, args: &Option<Box<dyn Any>>, n: u8) {
+            let offset = self.get_offset(args);
+            let buf = vec![n];
+            self.memory.write(offset, &buf[..]);
         }
 
-        fn memory_grow(&self, _args: &Option<Box<dyn Any>>) {
-           let mut stack = self.operand_stack.borrow_mut();
-           let grow_size = stack.pop_u32();
-           let old_size = self.memory.grow(grow_size as usize);
-           stack.push_u32(old_size as u32);
+        fn write_u16(&mut self, args: &Option<Box<dyn Any>>, n: u16) {
+            let offset = self.get_offset(args);
+            let buf = n.to_le_bytes();
+            self.memory.write(offset, &buf);
+        }
+
+        fn write_u32(&mut self, args: &Option<Box<dyn Any>>, n: u32) {
+            let offset = self.get_offset(args);
+            let buf = n.to_le_bytes();
+            self.memory.write(offset, &buf);
+        }
+
+        fn write_u64(&mut self, args: &Option<Box<dyn Any>>, n: u64) {
+            let offset = self.get_offset(args);
+            let buf = n.to_le_bytes();
+            self.memory.write(offset, &buf);
+        }
+
+        // part1: size 和 grow
+        fn memory_size(&mut self, _args: &Option<Box<dyn Any>>) {
+            self.operand_stack.push_u32(self.memory.size() as u32);
+        }
+
+        fn memory_grow(&mut self, _args: &Option<Box<dyn Any>>) {
+            let grow_size = self.operand_stack.pop_u32();
+            println!("memory grow size = {}", grow_size);
+            let old_size = self.memory.grow(grow_size as usize);
+            println!("old size = {}, new_size = {}", old_size, self.memory.size());
+            self.operand_stack.push_u32(old_size as u32);
         }
 
         // part2: load
-        fn i64_load(&self, args: &Option<Box<dyn Any>>) {
+        fn i32_load(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u32(args);
+            self.operand_stack.push_u32(val);
+        }
+
+        fn i64_load(&mut self, args: &Option<Box<dyn Any>>) {
             let val = self.read_u64(args);
-            let mut stack = self.operand_stack.borrow_mut();
-            stack.push_u64(val);
+            self.operand_stack.push_u64(val);
+        }
+
+        fn f32_load(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u32(args);
+            self.operand_stack.push_u32(val);
+        }
+
+        fn f64_load(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u64(args);
+            self.operand_stack.push_u64(val);
+        }
+
+        fn i32_load_8s(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u8(args);
+            self.operand_stack.push_i32(val as i32);
+        }
+
+        fn i32_load_8u(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u8(args);
+            self.operand_stack.push_u32(val as u32);
+        }
+
+        fn i32_load_16s(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u16(args);
+            self.operand_stack.push_i32(val as i32);
+        }
+
+        fn i32_load_16u(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u16(args);
+            self.operand_stack.push_u32(val as u32);
+        }
+
+        fn i64_load_8s(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u8(args);
+            self.operand_stack.push_i64(val as i64);
+        }
+
+        fn i64_load_8u(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u8(args);
+            self.operand_stack.push_u64(val as u64);
+        }
+
+        fn i64_load_16s(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u16(args);
+            self.operand_stack.push_i64(val as i64);
+        }
+
+        fn i64_load_16u(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u16(args);
+            self.operand_stack.push_u64(val as u64);
+        }
+
+        fn i64_load_32s(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u32(args);
+            self.operand_stack.push_i64(val as i64);
+        }
+
+        fn i64_load_32u(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.read_u32(args);
+            self.operand_stack.push_u64(val as u64);
+        }
+
+        // part3: store
+        fn i32_store(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u32();
+            self.write_u32(args, val);
+        }
+
+        fn i64_store(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u64();
+            self.write_u64(args, val);
+        }
+
+        fn f32_store(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u32();
+            self.write_u32(args, val);
+        }
+
+        fn f64_store(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u64();
+            self.write_u64(args, val);
+        }
+
+        fn i32_store_8(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u32();
+            self.write_u8(args, val as u8);
+        }
+
+        fn i32_store_16(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u32();
+            self.write_u16(args, val as u16);
+        }
+
+        fn i64_store_8(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u64();
+            self.write_u8(args, val as u8);
+        }
+
+        fn i64_store_16(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u64();
+            self.write_u16(args, val as u16);
+        }
+        fn i64_store_32(&mut self, args: &Option<Box<dyn Any>>) {
+            let val = self.operand_stack.pop_u64();
+            self.write_u32(args, val as u32);
         }
     }
 
@@ -1285,6 +1346,15 @@ pub mod interpreter {
             assert_eq!(stack.pop_bool(), false);
             assert_eq!(stack.pop_bool(), true);
             assert_eq!(stack.length(), 0);
+        }
+
+        #[test]
+        fn test_memory() {
+            // test memory size and grow
+            let mut mem = Memory::new(Limits { min: 2, max: None });
+            assert_eq!(mem.size(), 2);
+            assert_eq!(mem.grow(3), 2);
+            assert_eq!(mem.size(), 5);
         }
     }
 }
