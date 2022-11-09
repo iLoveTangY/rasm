@@ -150,7 +150,10 @@ pub mod interpreter {
                 for instr in &data.offset {
                     self.exec_instr(instr);
                 }
-                self.memory.write(self.operand_stack.pop_u64() as usize, &data.init[..]);
+                self.memory.write(
+                    self.operand_stack.pop_u64() as usize,
+                    &data.init[..],
+                );
             }
         }
 
@@ -352,29 +355,41 @@ pub mod interpreter {
 
             match name.as_str() {
                 "assert_true" => {
+                    // println!("call assert true");
                     assert_eq!(self.operand_stack.pop_bool(), true)
                 }
                 "assert_false" => {
+                    // println!("call assert false");
                     assert_eq!(self.operand_stack.pop_bool(), false)
                 }
-                "assert_eq_i32" =>  {
-                    println!("call i32 assert");
+                "assert_eq_i32" => {
+                    // println!("call i32 assert");
                     assert_eq!(
-                    self.operand_stack.pop_u32(),
-                    self.operand_stack.pop_u32()
-                )}
-                "assert_eq_i64" => assert_eq!(
-                    self.operand_stack.pop_u64(),
-                    self.operand_stack.pop_u64()
-                ),
-                "assert_eq_f32" => assert_eq!(
-                    self.operand_stack.pop_f32(),
-                    self.operand_stack.pop_f32()
-                ),
-                "assert_eq_f64" => assert_eq!(
-                    self.operand_stack.pop_f64(),
-                    self.operand_stack.pop_f64()
-                ),
+                        self.operand_stack.pop_u32(),
+                        self.operand_stack.pop_u32()
+                    )
+                }
+                "assert_eq_i64" => {
+                    // println!("call i64 assert");
+                    assert_eq!(
+                        self.operand_stack.pop_u64(),
+                        self.operand_stack.pop_u64()
+                    )
+                }
+                "assert_eq_f32" => {
+                    // println!("call f32 assert");
+                    assert_eq!(
+                        self.operand_stack.pop_f32(),
+                        self.operand_stack.pop_f32()
+                    )
+                }
+                "assert_eq_f64" => {
+                    // println!("call f64 assert");
+                    assert_eq!(
+                        self.operand_stack.pop_f64(),
+                        self.operand_stack.pop_f64()
+                    )
+                }
                 _ => {}
             }
         }
@@ -1200,7 +1215,11 @@ pub mod interpreter {
             let grow_size = self.operand_stack.pop_u32();
             println!("memory grow size = {}", grow_size);
             let old_size = self.memory.grow(grow_size as usize);
-            println!("old size = {}, new_size = {}", old_size, self.memory.size());
+            println!(
+                "old size = {}, new_size = {}",
+                old_size,
+                self.memory.size()
+            );
             self.operand_stack.push_u32(old_size as u32);
         }
 
@@ -1227,7 +1246,7 @@ pub mod interpreter {
 
         fn i32_load_8s(&mut self, args: &Option<Box<dyn Any>>) {
             let val = self.read_u8(args);
-            self.operand_stack.push_i32(val as i32);
+            self.operand_stack.push_i32(val as i8 as i32);
         }
 
         fn i32_load_8u(&mut self, args: &Option<Box<dyn Any>>) {
@@ -1237,7 +1256,7 @@ pub mod interpreter {
 
         fn i32_load_16s(&mut self, args: &Option<Box<dyn Any>>) {
             let val = self.read_u16(args);
-            self.operand_stack.push_i32(val as i32);
+            self.operand_stack.push_i32(val as i16 as i32);
         }
 
         fn i32_load_16u(&mut self, args: &Option<Box<dyn Any>>) {
@@ -1247,7 +1266,7 @@ pub mod interpreter {
 
         fn i64_load_8s(&mut self, args: &Option<Box<dyn Any>>) {
             let val = self.read_u8(args);
-            self.operand_stack.push_i64(val as i64);
+            self.operand_stack.push_i64(val as i8 as i64);
         }
 
         fn i64_load_8u(&mut self, args: &Option<Box<dyn Any>>) {
@@ -1257,7 +1276,7 @@ pub mod interpreter {
 
         fn i64_load_16s(&mut self, args: &Option<Box<dyn Any>>) {
             let val = self.read_u16(args);
-            self.operand_stack.push_i64(val as i64);
+            self.operand_stack.push_i64(val as i16 as i64);
         }
 
         fn i64_load_16u(&mut self, args: &Option<Box<dyn Any>>) {
@@ -1267,7 +1286,7 @@ pub mod interpreter {
 
         fn i64_load_32s(&mut self, args: &Option<Box<dyn Any>>) {
             let val = self.read_u32(args);
-            self.operand_stack.push_i64(val as i64);
+            self.operand_stack.push_i64(val as i32 as i64);
         }
 
         fn i64_load_32u(&mut self, args: &Option<Box<dyn Any>>) {
