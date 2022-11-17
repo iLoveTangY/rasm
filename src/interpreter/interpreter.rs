@@ -1,5 +1,5 @@
 pub mod interpreter {
-    use std::any::Any;
+    use std::{any::Any, vec};
 
     use crate::module::*;
 
@@ -14,6 +14,24 @@ pub mod interpreter {
 
         fn length(&self) -> usize {
             self.slots.len()
+        }
+
+        fn get_operand(&self, idx: usize) -> u64 {
+            self.slots[idx]
+        }
+
+        fn set_operand(&mut self, idx: usize, val: u64) {
+            self.slots[idx] = val;
+        }
+
+        fn push_u64s(&mut self, vals: &mut Vec<u64>) {
+            self.slots.append(vals)
+        }
+
+        fn pop_u64s(&mut self, n: usize) -> Vec<u64> {
+            let ret = self.slots[(self.slots.len() - n)..].to_vec();
+            self.slots.drain(self.slots.len() - n..);
+            ret
         }
 
         fn push_u64(&mut self, val: u64) {
@@ -73,6 +91,66 @@ pub mod interpreter {
         }
     }
 
+    struct ControlFrame {
+        opcode: OpCode,
+        block_type: FuncType,
+        instrs: Vec<Instruction>,
+        bp: usize, // base pointer
+        pc: i32,   // program counter
+    }
+
+    impl ControlFrame {
+        fn new(
+            opcode: OpCode,
+            block_type: FuncType,
+            instrs: Vec<Instruction>,
+            bp: usize,
+        ) -> ControlFrame {
+            ControlFrame {
+                opcode,
+                block_type,
+                instrs,
+                bp,
+                pc: 0,
+            }
+        }
+    }
+
+    struct ControlStack {
+        frames: Vec<ControlFrame>,
+    }
+
+    impl ControlStack {
+        fn new() -> ControlStack {
+            ControlStack { frames: vec![] }
+        }
+
+        fn push_control_frame(&mut self, cf: ControlFrame) {
+            self.frames.push(cf)
+        }
+
+        fn pop_control_frame(&mut self) -> ControlFrame {
+            self.frames.pop().unwrap()
+        }
+
+        fn control_depth(&self) -> usize {
+            self.frames.len()
+        }
+
+        fn top_control_frame(&self) -> &ControlFrame {
+            &(self.frames[self.frames.len() - 1])
+        }
+
+        fn top_call_frame(&self) -> (Option<&ControlFrame>, usize) {
+            for (idx, cf) in self.frames.iter().enumerate() {
+                if cf.opcode == OpCode::Call {
+                    return (Some(cf), idx);
+                }
+            }
+            return (None, usize::MAX);
+        }
+    }
+
     struct Memory {
         mem_type: MemType,
         data: Vec<u8>,
@@ -123,10 +201,18 @@ pub mod interpreter {
         }
     }
 
+    struct GlobalVar {
+        var_type: GlobalType,
+        val: u64,
+    }
+
     pub struct VM<'a> {
         operand_stack: OperandStack,
         module: &'a Module,
         memory: Memory,
+        control_stack: ControlStack,
+        local_0_idx: usize,
+        globals: Vec<GlobalVar>,
     }
 
     impl<'a> VM<'a> {
@@ -142,6 +228,9 @@ pub mod interpreter {
                 operand_stack,
                 module,
                 memory,
+                local_0_idx: usize::MAX,
+                globals: vec![],
+                control_stack: ControlStack::new(),
             }
         }
 
@@ -171,6 +260,40 @@ pub mod interpreter {
             let code = &self.module.code_sec[idx];
             for instr in &code.expr {
                 self.exec_instr(instr);
+            }
+        }
+
+        fn enter_block(
+            &mut self,
+            opcode: OpCode,
+            bt: FuncType,
+            instrs: Vec<Instruction>,
+        ) {
+            let bp = self.operand_stack.length() - bt.params_types.len();
+            let cf = ControlFrame::new(opcode, bt, instrs, bp);
+            self.control_stack.push_control_frame(cf);
+            if opcode == OpCode::Call {
+                self.local_0_idx = bp;
+            }
+        }
+
+        fn exit_block(&mut self) {
+            let cf = self.control_stack.pop_control_frame();
+            self.clear_block(cf);
+        }
+
+        fn clear_block(&mut self, cf: ControlFrame) {
+            let mut results = self
+                .operand_stack
+                .pop_u64s(cf.block_type.result_types.len());
+            self.operand_stack
+                .pop_u64s(self.operand_stack.length() - cf.bp);
+            self.operand_stack.push_u64s(&mut results);
+            if cf.opcode == OpCode::Call
+                && self.control_stack.control_depth() > 0
+            {
+                let (last_call_frame, _) = self.control_stack.top_call_frame();
+                self.local_0_idx = last_call_frame.unwrap().bp;
             }
         }
 

@@ -1,4 +1,4 @@
 # RASM
-A Rust implementaion for web assembly runtime.
+A **Rust** implementaion for WebAssembly interpreter.
 
 **Now is work in progress.**

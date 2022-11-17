@@ -49,8 +49,8 @@ pub mod module {
 
     #[derive(Clone)]
     pub struct FuncType {
-        params_types: Vec<ValType>, // 函数的参数
-        result_types: Vec<ValType>, // 函数的返回值
+        pub params_types: Vec<ValType>, // 函数的参数
+        pub result_types: Vec<ValType>, // 函数的返回值
     }
 
     impl FuncType {
