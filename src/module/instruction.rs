@@ -2,10 +2,12 @@ pub mod instruction {
     use crate::module::OpCode;
     use std::any::Any;
     use std::fmt;
+    use std::rc::Rc;
 
+    #[derive(Clone)]
     pub struct Instruction {
         pub opcode: OpCode,
-        pub args: Option<Box<dyn Any>>,
+        pub args: Option<Rc<dyn Any>>,
     }
 
     impl Instruction {

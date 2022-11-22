@@ -14,6 +14,7 @@ pub mod module {
     use std::fs::File;
     use std::io::prelude::*;
     use std::path::Path;
+    use std::rc::Rc;
     use std::{convert::TryInto, panic};
 
     type TypeIdx = u32;
@@ -121,6 +122,7 @@ pub mod module {
         }
     }
 
+    #[derive(Clone, Copy)]
     pub struct GlobalType {
         pub val_type: ValType,
         pub mutable: bool,
@@ -185,7 +187,7 @@ pub mod module {
     }
 
     impl Code {
-        fn get_local_count(&self) -> u64 {
+        pub fn get_local_count(&self) -> u64 {
             let mut n = 0u64;
             for locals in &self.locals {
                 n += locals.n as u64;
@@ -474,39 +476,37 @@ pub mod module {
             }
         }
 
-        fn read_args(&mut self, opcode: &OpCode) -> Option<Box<dyn Any>> {
+        fn read_args(&mut self, opcode: &OpCode) -> Option<Rc<dyn Any>> {
             match opcode {
                 OpCode::Block | OpCode::Loop => {
-                    Some(Box::new(self.read_block_args()))
+                    Some(Rc::new(self.read_block_args()))
                 }
-                OpCode::If => Some(Box::new(self.read_if_args())),
-                OpCode::Br | OpCode::BrIf => {
-                    Some(Box::new(self.read_var_u32()))
-                } // label index
-                OpCode::BrTable => Some(Box::new(self.read_br_table_args())),
-                OpCode::Call => Some(Box::new(self.read_var_u32())), // function index
+                OpCode::If => Some(Rc::new(self.read_if_args())),
+                OpCode::Br | OpCode::BrIf => Some(Rc::new(self.read_var_u32())), // label index
+                OpCode::BrTable => Some(Rc::new(self.read_br_table_args())),
+                OpCode::Call => Some(Rc::new(self.read_var_u32())), // function index
                 OpCode::CallIndirect => {
-                    Some(Box::new(self.read_call_indirect_args()))
+                    Some(Rc::new(self.read_call_indirect_args()))
                 }
                 OpCode::LocalGet | OpCode::LocalSet | OpCode::LocalTee => {
-                    Some(Box::new(self.read_var_u32()))
+                    Some(Rc::new(self.read_var_u32()))
                 } // local index
                 OpCode::GlobalGet | OpCode::GlobalSet => {
-                    Some(Box::new(self.read_var_u32()))
+                    Some(Rc::new(self.read_var_u32()))
                 } // global index
                 OpCode::MemorySize | OpCode::MemoryGrow => {
-                    Some(Box::new(self.read_zero()))
+                    Some(Rc::new(self.read_zero()))
                 }
-                OpCode::I32Const => Some(Box::new(self.read_var_i32())),
-                OpCode::I64Const => Some(Box::new(self.read_var_i64())),
-                OpCode::F32Const => Some(Box::new(self.read_f32())),
-                OpCode::F64Const => Some(Box::new(self.read_f64())),
-                OpCode::TruncSat => Some(Box::new(self.read_byte())),
+                OpCode::I32Const => Some(Rc::new(self.read_var_i32())),
+                OpCode::I64Const => Some(Rc::new(self.read_var_i64())),
+                OpCode::F32Const => Some(Rc::new(self.read_f32())),
+                OpCode::F64Const => Some(Rc::new(self.read_f64())),
+                OpCode::TruncSat => Some(Rc::new(self.read_byte())),
                 _ => {
                     if *opcode >= OpCode::I32Load
                         && *opcode <= OpCode::I64Store32
                     {
-                        return Some(Box::new(self.read_mem_arg()));
+                        return Some(Rc::new(self.read_mem_arg()));
                     }
                     None
                 }
