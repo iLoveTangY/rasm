@@ -114,10 +114,6 @@ pub mod interpreter {
                 pc: 0,
             }
         }
-
-        fn move_pc(&mut self) {
-            self.pc += 1;
-        }
     }
 
     struct ControlStack {
@@ -141,8 +137,9 @@ pub mod interpreter {
             self.frames.len()
         }
 
-        fn top_control_frame(&self) -> &ControlFrame {
-            &(self.frames[self.frames.len() - 1])
+        fn top_control_frame(&mut self) -> &mut ControlFrame {
+            let idx = self.frames.len() - 1;
+            &mut self.frames[idx]
         }
 
         fn top_call_frame(&self) -> (Option<&ControlFrame>, usize) {
@@ -293,13 +290,14 @@ pub mod interpreter {
 
         fn main_loop(&mut self) {
             let depth = self.control_stack.control_depth();
+            // 执行栈帧中的每条指令
             while self.control_stack.control_depth() >= depth {
                 let cf = self.control_stack.top_control_frame();
                 if cf.pc as usize == cf.instrs.len() {
-                    self.exit_block();
+                    self.exit_block();  // 已经执行完了一个control frame
                 } else {
                     let instr = cf.instrs[cf.pc as usize].clone();
-                    // TODO: cf.move_pc();
+                    cf.pc += 1;
                     self.exec_instr(&instr);
                 }
             }
@@ -311,6 +309,7 @@ pub mod interpreter {
             bt: FuncType,
             instrs: Vec<Instruction>,
         ) {
+            // enter_block 时参数已在栈顶(调用方将参数入栈)
             let bp = self.operand_stack.length() - bt.params_types.len();
             let cf = ControlFrame::new(opcode, bt, instrs, bp);
             self.control_stack.push_control_frame(cf);
@@ -325,7 +324,7 @@ pub mod interpreter {
         }
 
         fn clear_block(&mut self, cf: ControlFrame) {
-            // 弹出结果
+            // 弹出结果，结果已在栈顶
             let mut results = self
                 .operand_stack
                 .pop_u64s(cf.block_type.result_types.len());

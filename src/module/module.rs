@@ -239,7 +239,7 @@ pub mod module {
         pub mem_sec: Vec<MemType>,
         pub global_sec: Vec<Global>,
         pub export_sec: Vec<Export>, // Wasm 模块中的所有导出项
-        pub start_sec: Option<FuncIdx>,
+        pub start_sec: Option<FuncIdx>,  // Wasm 模块中的起始函数
         pub elem_sec: Vec<Elem>, // 元素段，存放表初始化数据
         pub code_sec: Vec<Code>, // 代码段，存放函数的字节码以及对应的局部变量信息
         pub data_sec: Vec<Data>, // 数据段，存放内存初始化数据
