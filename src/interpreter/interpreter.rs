@@ -143,7 +143,7 @@ pub mod interpreter {
         }
 
         fn top_call_frame(&self) -> (Option<&ControlFrame>, usize) {
-            for (idx, cf) in self.frames.iter().enumerate() {
+            for (idx, cf) in self.frames.iter().rev().enumerate() {
                 if cf.opcode == OpCode::Call {
                     return (Some(cf), idx);
                 }
@@ -294,7 +294,7 @@ pub mod interpreter {
             while self.control_stack.control_depth() >= depth {
                 let cf = self.control_stack.top_control_frame();
                 if cf.pc as usize == cf.instrs.len() {
-                    self.exit_block();  // 已经执行完了一个control frame
+                    self.exit_block(); // 已经执行完了一个control frame
                 } else {
                     let instr = cf.instrs[cf.pc as usize].clone();
                     cf.pc += 1;
@@ -1539,21 +1539,25 @@ pub mod interpreter {
         // 局部变量指令
         fn local_get(&mut self, args: &Option<Rc<dyn Any>>) {
             let idx = args.as_ref().unwrap().downcast_ref::<u32>().unwrap();
-            let val = self.operand_stack.get_operand(*idx as usize);
+            let val = self
+                .operand_stack
+                .get_operand(self.local_0_idx + *idx as usize);
             self.operand_stack.push_u64(val);
         }
 
         fn local_set(&mut self, args: &Option<Rc<dyn Any>>) {
             let idx = args.as_ref().unwrap().downcast_ref::<u32>().unwrap();
             let val = self.operand_stack.pop_u64();
-            self.operand_stack.set_operand(*idx as usize, val);
+            self.operand_stack
+                .set_operand(self.local_0_idx + *idx as usize, val);
         }
 
         fn local_tee(&mut self, args: &Option<Rc<dyn Any>>) {
             let idx = args.as_ref().unwrap().downcast_ref::<u32>().unwrap();
             let val = self.operand_stack.pop_u64();
             self.operand_stack.push_u64(val);
-            self.operand_stack.set_operand(*idx as usize, val);
+            self.operand_stack
+                .set_operand(self.local_0_idx + *idx as usize, val);
         }
 
         // 全局变量指令
@@ -1570,7 +1574,7 @@ pub mod interpreter {
         }
 
         // br_if
-        fn br_if(&mut self, args: &Option<Rc<dyn Any>>) {
+        fn br_if(&mut self, _: &Option<Rc<dyn Any>>) {
             if self.operand_stack.pop_bool() {
                 self.exit_block()
             }
@@ -1602,6 +1606,30 @@ pub mod interpreter {
             assert_eq!(stack.pop_bool(), false);
             assert_eq!(stack.pop_bool(), true);
             assert_eq!(stack.length(), 0);
+        }
+
+        #[test]
+        fn test_local_var() {
+            let mut operand_stack = OperandStack::new();
+            operand_stack.push_u32(1);
+            operand_stack.push_u32(3);
+            operand_stack.push_u32(5);
+            assert_eq!(3, operand_stack.get_operand(1));
+            operand_stack.set_operand(1, 7);
+            assert_eq!(7, operand_stack.get_operand(1));
+        }
+
+        #[test]
+        fn test_global_var() {
+            let mut g = GlobalVar::new(
+                GlobalType {
+                    val_type: ValType::I32,
+                    mutable: true,
+                },
+                0,
+            );
+            g.set_as_u64(100);
+            assert_eq!(100, g.get_as_u64());
         }
 
         #[test]
