@@ -1,7 +1,7 @@
 pub mod interpreter {
     use std::{any::Any, rc::Rc, vec};
 
-    use crate::module::*;
+    use crate::module::{*, instruction::instruction::BrArgs};
 
     struct OperandStack {
         slots: Vec<u64>,
@@ -342,6 +342,15 @@ pub mod interpreter {
             }
         }
 
+        fn _reset_block(&mut self, cf: &ControlFrame) {
+            let mut results = self
+                .operand_stack
+                .pop_u64s(cf.block_type.params_types.len());
+            self.operand_stack
+                .pop_u64s(self.operand_stack.length() - cf.bp);
+            self.operand_stack.push_u64s(&mut results);
+        }
+
         fn exec_instr(&mut self, instr: &Instruction) {
             match instr.opcode {
                 OpCode::Call => self.call(&instr.args),
@@ -517,7 +526,15 @@ pub mod interpreter {
                 OpCode::LocalTee => self.local_tee(&instr.args),
                 OpCode::GlobalGet => self.global_get(&instr.args),
                 OpCode::GlobalSet => self.global_set(&instr.args),
+                OpCode::Br => self.br(&instr.args),
+                OpCode::BrTable => self.br_table(&instr.args),
                 OpCode::BrIf => self.br_if(&instr.args),
+                OpCode::Block => self.block(&instr.args),
+                OpCode::Loop => self.loop_instr(&instr.args),
+                OpCode::If => self.if_instr(&instr.args),
+                OpCode::Return => self.reture_instr(&instr.args),
+                OpCode::Unreachable => self.unreachable(&instr.args),
+                OpCode::Nop => self.nop(&instr.args),
                 _ => {}
             }
         }
@@ -1574,10 +1591,90 @@ pub mod interpreter {
         }
 
         // br_if
-        fn br_if(&mut self, _: &Option<Rc<dyn Any>>) {
+        fn br_if(&mut self, args: &Option<Rc<dyn Any>>) {
             if self.operand_stack.pop_bool() {
-                self.exit_block()
+                self.br(args);
             }
+        }
+
+        fn block(&mut self, args: &Option<Rc<dyn Any>>) {
+            let block_args =
+                args.as_ref().unwrap().downcast_ref::<BlockArgs>().unwrap();
+            let block_type = self.module.get_block_type(block_args.block_type);
+            self.enter_block(
+                OpCode::Block,
+                block_type,
+                block_args.instructions.clone(),
+            );
+        }
+
+        fn loop_instr(&mut self, args: &Option<Rc<dyn Any>>) {
+            let block_args =
+                args.as_ref().unwrap().downcast_ref::<BlockArgs>().unwrap();
+            let block_type = self.module.get_block_type(block_args.block_type);
+            self.enter_block(
+                OpCode::Loop,
+                block_type,
+                block_args.instructions.clone(),
+            );
+        }
+
+        fn if_instr(&mut self, args: &Option<Rc<dyn Any>>) {
+            let if_args =
+                args.as_ref().unwrap().downcast_ref::<IfArgs>().unwrap();
+            let block_type = self.module.get_block_type(if_args.block_type);
+            let instrs;
+            if self.operand_stack.pop_bool() {
+                instrs = if_args.instructions_1.clone();
+            } else {
+                instrs = if_args.instructions_2.clone();
+            }
+            self.enter_block(OpCode::If, block_type, instrs);
+        }
+
+        fn br(&mut self, args: &Option<Rc<dyn Any>>) {
+            let label_idx =
+                args.as_ref().unwrap().downcast_ref::<BrArgs>().unwrap();
+            // 先弹出label_idx 个控制帧
+            for _ in 0..*label_idx {
+                self.control_stack.pop_control_frame();
+            }
+            let cf = self.control_stack.top_control_frame();
+            if cf.opcode != OpCode::Loop {
+                // 如果是 block 或者 if 块，再弹出一个控制帧, 不能直接pop，因为还有参数和返回值要处理
+                self.exit_block();
+            } else {
+                // 如果是 loop 块，需要重新进入进入控制帧
+                cf.pc = 0;
+                // self.reset_block(cf);
+                let mut results = self
+                    .operand_stack
+                    .pop_u64s(cf.block_type.params_types.len());
+                self.operand_stack
+                    .pop_u64s(self.operand_stack.length() - cf.bp);
+                self.operand_stack.push_u64s(&mut results);
+            }
+        }
+
+        fn br_table(&mut self, args: &Option<Rc<dyn Any>>) {
+            let br_table_args = args.as_ref().unwrap().downcast_ref::<BrTableArgs>().unwrap();
+            let idx = self.operand_stack.pop_u32() as usize;
+            if idx < br_table_args.labels.len() {
+                self.br(&Some(Rc::new(br_table_args.labels[idx])));
+            }
+        }
+
+        fn reture_instr(&mut self, _: &Option<Rc<dyn Any>>) {
+            let (_, label_idx) = self.control_stack.top_call_frame();
+            self.br(&Some(Rc::new(label_idx as BrArgs)));
+        }
+
+        fn unreachable(&mut self, _: &Option<Rc<dyn Any>>) {
+            panic!("Unreachable");
+        }
+
+        fn nop(&mut self, _: &Option<Rc<dyn Any>>) {
+            // do nothing
         }
     }
 

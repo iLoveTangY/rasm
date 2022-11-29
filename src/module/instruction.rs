@@ -28,6 +28,7 @@ pub mod instruction {
     }
 
     pub type BlockType = i32;
+    pub type BrArgs = u32;
 
     pub const BLOCK_TYPE_I32: BlockType = -1;
     pub const BLOCK_TYPE_I64: BlockType = -2;

@@ -19,7 +19,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["--file", "data/fib.wasm"],
+            "args": ["--file", "data/br_if.wasm"],
             "cwd": "${workspaceFolder}"
         },
         {
