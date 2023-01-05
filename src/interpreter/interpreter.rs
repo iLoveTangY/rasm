@@ -582,7 +582,7 @@ pub mod interpreter {
                 OpCode::Block => self.block(&instr.args),
                 OpCode::Loop => self.loop_instr(&instr.args),
                 OpCode::If => self.if_instr(&instr.args),
-                OpCode::Return => self.reture_instr(&instr.args),
+                OpCode::Return => self.return_instr(&instr.args),
                 OpCode::Unreachable => self.unreachable(&instr.args),
                 OpCode::Nop => self.nop(&instr.args),
                 _ => {}
@@ -1864,7 +1864,7 @@ pub mod interpreter {
             }
         }
 
-        fn reture_instr(&mut self, _: &Option<Rc<dyn Any>>) {
+        fn return_instr(&mut self, _: &Option<Rc<dyn Any>>) {
             let (_, label_idx) = self.control_stack.top_call_frame();
             self.br(&Some(Rc::new(label_idx as BrArgs)));
         }
