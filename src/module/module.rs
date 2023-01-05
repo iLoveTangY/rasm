@@ -181,6 +181,7 @@ pub mod module {
         pub init: Vec<FuncIdx>, // 函数索引列表（给定的初始数据）
     }
 
+    #[derive(Clone)]
     pub struct Code {
         pub locals: Vec<Locals>, // 所有局部变量
         pub expr: Expr,          // 函数字节码
@@ -196,6 +197,7 @@ pub mod module {
         }
     }
 
+    #[derive(Clone)]
     pub struct Locals {
         pub n: u32, // 个数，局部变量是压缩存储的，连续多个相同类型的局部变量会被分为一组
         pub val_type: ValType, // 类型

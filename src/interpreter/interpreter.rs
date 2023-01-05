@@ -1,7 +1,7 @@
 pub mod interpreter {
     use std::{any::Any, rc::Rc, vec};
 
-    use crate::module::{*, instruction::instruction::BrArgs};
+    use crate::module::{instruction::instruction::BrArgs, *};
 
     struct OperandStack {
         slots: Vec<u64>,
@@ -224,6 +224,37 @@ pub mod interpreter {
         }
     }
 
+    type WasmVal = Box<dyn Any>;
+    type NativeFunc = fn(Vec<WasmVal>) -> Vec<WasmVal>;
+
+    #[derive(Clone)]
+    struct VMFunc {
+        func_type: FuncType,
+        code: Option<Code>,
+        native_func: Option<NativeFunc>,
+    }
+
+    impl VMFunc {
+        fn new_internal_func(func_type: FuncType, code: Code) -> VMFunc {
+            VMFunc {
+                func_type,
+                code: Some(code),
+                native_func: None,
+            }
+        }
+
+        fn new_external_func(
+            func_type: FuncType,
+            native_func: NativeFunc,
+        ) -> VMFunc {
+            VMFunc {
+                func_type,
+                code: None,
+                native_func: Some(native_func),
+            }
+        }
+    }
+
     pub struct VM<'a> {
         operand_stack: OperandStack,
         module: &'a Module,
@@ -231,6 +262,7 @@ pub mod interpreter {
         control_stack: ControlStack,
         local_0_idx: usize,
         globals: Vec<GlobalVar>,
+        vm_funcs: Vec<VMFunc>,
     }
 
     impl<'a> VM<'a> {
@@ -249,6 +281,7 @@ pub mod interpreter {
                 local_0_idx: usize::MAX,
                 globals: vec![],
                 control_stack: ControlStack::new(),
+                vm_funcs: vec![],
             }
         }
 
@@ -276,16 +309,33 @@ pub mod interpreter {
             }
         }
 
+        fn get_main_idx(&self) -> Option<u32> {
+            for exp in &self.module.export_sec {
+                match exp.desc {
+                    ExportDesc::Func(idx) if exp.name == "main" => {
+                        return Some(idx)
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+
         pub fn exec_main(module: &Module) {
             let mut vm = VM::new(module);
+            vm.init_memory();
+            vm.init_globals();
+            vm.init_funcs();
             if let Some(start_sec_id) = module.start_sec {
-                vm.init_memory();
-                vm.init_globals();
                 vm.call(&Some(Rc::new(start_sec_id)));
-                vm.main_loop();
             } else {
-                println!("No start sec!");
+                if let Some(idx) = vm.get_main_idx() {
+                    vm.call(&Some(Rc::new(idx)));
+                } else {
+                    panic!("No start sec!");
+                }
             }
+            vm.main_loop();
         }
 
         fn main_loop(&mut self) {
@@ -539,72 +589,218 @@ pub mod interpreter {
             }
         }
 
-        // dummy call
-        fn call_assert_func(&mut self, func_idx: u32) {
-            let name = &self.module.import_sec[func_idx as usize].member_name;
-
-            match name.as_str() {
-                "assert_true" => {
-                    // println!("call assert true");
-                    assert_eq!(self.operand_stack.pop_bool(), true)
-                }
-                "assert_false" => {
-                    // println!("call assert false");
-                    assert_eq!(self.operand_stack.pop_bool(), false)
-                }
-                "assert_eq_i32" => {
-                    // println!("call i32 assert");
-                    assert_eq!(
-                        self.operand_stack.pop_u32(),
-                        self.operand_stack.pop_u32()
-                    )
-                }
-                "assert_eq_i64" => {
-                    // println!("call i64 assert");
-                    assert_eq!(
-                        self.operand_stack.pop_u64(),
-                        self.operand_stack.pop_u64()
-                    )
-                }
-                "assert_eq_f32" => {
-                    // println!("call f32 assert");
-                    assert_eq!(
-                        self.operand_stack.pop_f32(),
-                        self.operand_stack.pop_f32()
-                    )
-                }
-                "assert_eq_f64" => {
-                    // println!("call f64 assert");
-                    assert_eq!(
-                        self.operand_stack.pop_f64(),
-                        self.operand_stack.pop_f64()
-                    )
-                }
-                _ => {}
+        fn init_funcs(&mut self) {
+            self.link_native_funcs();
+            for (idx, func_idx) in self.module.func_sec.iter().enumerate() {
+                self.vm_funcs.push(VMFunc::new_internal_func(
+                    self.module.type_sec[*func_idx as usize].clone(),
+                    self.module.code_sec[idx].clone(),
+                ));
             }
         }
 
-        fn call_internal_func(&mut self, func_idx: u32) {
-            let func_type_idx = self.module.func_sec[func_idx as usize];
-            let func_type =
-                self.module.type_sec[func_type_idx as usize].clone();
-            let code = self.module.code_sec[func_idx as usize].expr.clone();
-            self.enter_block(OpCode::Call, func_type, code);
+        fn print_char(args: Vec<WasmVal>) -> Vec<WasmVal> {
+            assert!(args.len() == 1);
+            let arg = args[0].downcast_ref::<i32>().unwrap();
+            print!("{}", *arg as u8 as char);
+            vec![]
+        }
+
+        fn assert_true(args: Vec<WasmVal>) -> Vec<WasmVal> {
+            assert!(args.len() == 1);
+            let arg = args[0].downcast_ref::<bool>().unwrap();
+            assert!(arg);
+            vec![]
+        }
+
+        fn assert_false(args: Vec<WasmVal>) -> Vec<WasmVal> {
+            assert!(args.len() == 1);
+            let arg = args[0].downcast_ref::<bool>().unwrap();
+            assert!(!arg);
+            vec![]
+        }
+
+        fn assert_eq_i32(args: Vec<WasmVal>) -> Vec<WasmVal> {
+            assert!(args.len() == 2);
+            let left = args[0].downcast_ref::<i32>().unwrap();
+            let right = args[1].downcast_ref::<i32>().unwrap();
+            assert_eq!(left, right);
+            vec![]
+        }
+
+        fn assert_eq_i64(args: Vec<WasmVal>) -> Vec<WasmVal> {
+            assert!(args.len() == 2);
+            let left = args[0].downcast_ref::<i64>().unwrap();
+            let right = args[1].downcast_ref::<i64>().unwrap();
+            assert_eq!(left, right);
+            vec![]
+        }
+
+        fn assert_eq_f32(args: Vec<WasmVal>) -> Vec<WasmVal> {
+            assert!(args.len() == 2);
+            let left = args[0].downcast_ref::<f32>().unwrap();
+            let right = args[1].downcast_ref::<f32>().unwrap();
+            assert_eq!(left, right);
+            vec![]
+        }
+
+        fn assert_eq_f64(args: Vec<WasmVal>) -> Vec<WasmVal> {
+            assert!(args.len() == 2);
+            let left = args[0].downcast_ref::<f64>().unwrap();
+            let right = args[1].downcast_ref::<f64>().unwrap();
+            assert_eq!(left, right);
+            vec![]
+        }
+
+        fn link_native_funcs(&mut self) {
+            for imp in &self.module.import_sec {
+                if imp.module_name == "env" {
+                    match imp.desc {
+                        ImportDesc::Func(func_idx) => {
+                            let ft =
+                                self.module.type_sec[func_idx as usize].clone();
+                            match imp.member_name.as_str() {
+                                "print_char" => {
+                                    self.vm_funcs.push(
+                                        VMFunc::new_external_func(
+                                            ft,
+                                            VM::print_char,
+                                        ),
+                                    );
+                                }
+                                "assert_true" => {
+                                    self.vm_funcs.push(
+                                        VMFunc::new_external_func(
+                                            ft,
+                                            VM::assert_true,
+                                        ),
+                                    );
+                                }
+                                "assert_false" => {
+                                    self.vm_funcs.push(
+                                        VMFunc::new_external_func(
+                                            ft,
+                                            VM::assert_false,
+                                        ),
+                                    );
+                                }
+                                "assert_eq_i32" => {
+                                    self.vm_funcs.push(
+                                        VMFunc::new_external_func(
+                                            ft,
+                                            VM::assert_eq_i32,
+                                        ),
+                                    );
+                                }
+                                "assert_eq_i64" => {
+                                    self.vm_funcs.push(
+                                        VMFunc::new_external_func(
+                                            ft,
+                                            VM::assert_eq_i64,
+                                        ),
+                                    );
+                                }
+                                "assert_eq_f32" => {
+                                    self.vm_funcs.push(
+                                        VMFunc::new_external_func(
+                                            ft,
+                                            VM::assert_eq_f32,
+                                        ),
+                                    );
+                                }
+                                "assert_eq_f64" => {
+                                    self.vm_funcs.push(
+                                        VMFunc::new_external_func(
+                                            ft,
+                                            VM::assert_eq_f64,
+                                        ),
+                                    );
+                                }
+                                _ => {
+                                    panic!("Should not reach here.");
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        fn call_internal_func(&mut self, func: &VMFunc) {
+            self.enter_block(
+                OpCode::Call,
+                func.func_type.clone(),
+                func.code.clone().unwrap().expr,
+            );
             // alloc locals
-            let local_cnt =
-                self.module.code_sec[func_idx as usize].get_local_count();
+            let local_cnt = func.code.as_ref().unwrap().get_local_count();
             for _ in 0..local_cnt {
                 self.operand_stack.push_u64(0);
             }
         }
 
+        fn call_external_func(&mut self, f: &VMFunc) {
+            let args = self.pop_args(&f.func_type);
+            let results = f.native_func.unwrap()(args);
+            self.push_results(&f.func_type, results);
+        }
+
+        fn pop_args(&mut self, ft: &FuncType) -> Vec<Box<dyn Any>> {
+            let mut args = Vec::with_capacity(ft.params_types.len());
+            for i in 0..ft.params_types.len() {
+                let val = self.operand_stack.pop_u64();
+                args.push(self.wrap_u64(&ft.params_types[i], val));
+            }
+            args.into_iter().rev().collect()
+        }
+
+        fn push_results(&mut self, ft: &FuncType, results: Vec<Box<dyn Any>>) {
+            for result in results {
+                let val = self.unwrap_u64(&ft.result_types[0], result);
+                self.operand_stack.push_u64(val);
+            }
+        }
+
+        fn wrap_u64(&mut self, vt: &ValType, val: u64) -> Box<dyn Any> {
+            match vt {
+                ValType::I32 => Box::new(val as i32),
+                ValType::I64 => Box::new(val as i64),
+                ValType::F32 => {
+                    Box::new(f32::from_le_bytes((val as u32).to_le_bytes()))
+                }
+                ValType::F64 => Box::new(f64::from_le_bytes(val.to_le_bytes())),
+                ValType::FuncRef => panic!("Unreachable."),
+            }
+        }
+
+        fn unwrap_u64(&mut self, vt: &ValType, val: Box<dyn Any>) -> u64 {
+            let val_ref = val.as_ref();
+            match vt {
+                ValType::I32 => {
+                    val_ref.downcast_ref::<i32>().unwrap().to_owned() as u64
+                }
+                ValType::I64 => {
+                    val_ref.downcast_ref::<i64>().unwrap().to_owned() as u64
+                }
+                ValType::F32 => u64::from_le_bytes(
+                    (val_ref.downcast_ref::<f32>().unwrap().to_owned() as f64)
+                        .to_le_bytes(),
+                ),
+                ValType::F64 => u64::from_le_bytes(
+                    val_ref.downcast_ref::<f64>().unwrap().to_le_bytes(),
+                ),
+                ValType::FuncRef => panic!("Unreachable."),
+            }
+        }
+
         fn call(&mut self, args: &Option<Rc<dyn Any>>) {
             let idx = args.as_ref().unwrap().downcast_ref::<u32>().unwrap();
-            let imported_func_cnt = self.module.import_sec.len();
-            if *idx < imported_func_cnt as u32 {
-                self.call_assert_func(*idx);
-            } else {
-                self.call_internal_func(*idx - imported_func_cnt as u32);
+            let f = self.vm_funcs[*idx as usize].clone();
+            if f.code.is_some() {
+                self.call_internal_func(&f);
+            } else if f.native_func.is_some() {
+                self.call_external_func(&f);
             }
         }
 
@@ -1590,7 +1786,7 @@ pub mod interpreter {
             self.globals[*idx as usize].set_as_u64(val);
         }
 
-        // br_if
+        // 控制指令
         fn br_if(&mut self, args: &Option<Rc<dyn Any>>) {
             if self.operand_stack.pop_bool() {
                 self.br(args);
@@ -1657,7 +1853,11 @@ pub mod interpreter {
         }
 
         fn br_table(&mut self, args: &Option<Rc<dyn Any>>) {
-            let br_table_args = args.as_ref().unwrap().downcast_ref::<BrTableArgs>().unwrap();
+            let br_table_args = args
+                .as_ref()
+                .unwrap()
+                .downcast_ref::<BrTableArgs>()
+                .unwrap();
             let idx = self.operand_stack.pop_u32() as usize;
             if idx < br_table_args.labels.len() {
                 self.br(&Some(Rc::new(br_table_args.labels[idx])));
