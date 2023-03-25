@@ -48,14 +48,14 @@ pub mod module {
         }
     }
 
-    #[derive(Clone)]
+    #[derive(Clone, Default)]
     pub struct FuncType {
         pub params_types: Vec<ValType>, // 函数的参数
         pub result_types: Vec<ValType>, // 函数的返回值
     }
 
     impl FuncType {
-        fn get_signature(&self) -> String {
+        pub fn get_signature(&self) -> String {
             let mut signature = String::new();
             signature.push_str("(");
             signature.push_str(
@@ -107,6 +107,7 @@ pub mod module {
 
     // 表类型需要描述表的元素类型以及元素数量的限制。Wasm规范只定义了一种元素类型，即函数引用，不过已经有提案建议增加其他元素类型
     // 为了反映二进制格式，也为了便于以后扩展，我们还是给元素类型留好位置
+    #[derive(Clone, Copy)]
     pub struct TableType {
         pub elem_type: ValType, // 目前只能是 ValType::FuncRef
         pub limits: Limits,

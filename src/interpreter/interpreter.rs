@@ -227,7 +227,7 @@ pub mod interpreter {
     type WasmVal = Box<dyn Any>;
     type NativeFunc = fn(Vec<WasmVal>) -> Vec<WasmVal>;
 
-    #[derive(Clone)]
+    #[derive(Clone, Default)]
     struct VMFunc {
         func_type: FuncType,
         code: Option<Code>,
@@ -255,6 +255,42 @@ pub mod interpreter {
         }
     }
 
+    struct Table {
+        elem_type: TableType,
+        elems: Vec<VMFunc>,
+    }
+
+    impl Table {
+        fn new(elem_type: TableType) -> Table {
+            let min = elem_type.limits.min;
+            Table {
+                elem_type,
+                elems: vec![VMFunc::default(); min],
+            }
+        }
+
+        fn get_type(&self) -> TableType {
+            self.elem_type
+        }
+
+        fn size(&self) -> usize {
+            self.elems.len()
+        }
+
+        fn grow(&mut self, n: usize) {
+            let m = vec![VMFunc::default(); n];
+            self.elems.extend(m);
+        }
+
+        fn get_elem(&self, idx: usize) -> VMFunc {
+            self.elems[idx].clone()
+        }
+
+        fn set_elem(&mut self, idx: usize, elem: VMFunc) {
+            self.elems[idx] = elem;
+        }
+    }
+
     pub struct VM<'a> {
         operand_stack: OperandStack,
         module: &'a Module,
@@ -263,6 +299,7 @@ pub mod interpreter {
         local_0_idx: usize,
         globals: Vec<GlobalVar>,
         vm_funcs: Vec<VMFunc>,
+        table: Option<Table>,
     }
 
     impl<'a> VM<'a> {
@@ -282,6 +319,25 @@ pub mod interpreter {
                 globals: vec![],
                 control_stack: ControlStack::new(),
                 vm_funcs: vec![],
+                table: None,
+            }
+        }
+
+        fn init_table(&mut self) {
+            if self.module.table_sec.len() > 0 {
+                self.table = Some(Table::new(self.module.table_sec[0]));
+                for elem in &self.module.elem_sec {
+                    for instr in &elem.offset {
+                        self.exec_instr(instr);
+                    }
+                    let offset = self.operand_stack.pop_u32();
+                    for (idx, func_idx) in elem.init.iter().enumerate() {
+                        self.table.as_mut().unwrap().set_elem(
+                            offset as usize + idx,
+                            self.vm_funcs[*func_idx as usize].clone(),
+                        );
+                    }
+                }
             }
         }
 
@@ -326,6 +382,7 @@ pub mod interpreter {
             vm.init_memory();
             vm.init_globals();
             vm.init_funcs();
+            vm.init_table();
             if let Some(start_sec_id) = module.start_sec {
                 vm.call(&Some(Rc::new(start_sec_id)));
             } else {
@@ -583,6 +640,7 @@ pub mod interpreter {
                 OpCode::Loop => self.loop_instr(&instr.args),
                 OpCode::If => self.if_instr(&instr.args),
                 OpCode::Return => self.return_instr(&instr.args),
+                OpCode::CallIndirect => self.call_indrect(&instr.args),
                 OpCode::Unreachable => self.unreachable(&instr.args),
                 OpCode::Nop => self.nop(&instr.args),
                 _ => {}
@@ -1867,6 +1925,27 @@ pub mod interpreter {
         fn return_instr(&mut self, _: &Option<Rc<dyn Any>>) {
             let (_, label_idx) = self.control_stack.top_call_frame();
             self.br(&Some(Rc::new(label_idx as BrArgs)));
+        }
+
+        fn call_indrect(&mut self, args: &Option<Rc<dyn Any>>) {
+            let i = self.operand_stack.pop_u32();
+            if self.table.as_ref().is_none() || i > self.table.as_ref().unwrap().size() as u32 {
+                panic!("Undefined element");
+            }
+            let table = self.table.as_ref().unwrap();
+            let func_in_table = &table.get_elem(i as usize);
+            let type_idx = args.as_ref().unwrap().downcast_ref::<u32>().unwrap();
+            let func_type = &self.module.type_sec[*type_idx as usize];
+            if func_in_table.func_type.get_signature() != func_type.get_signature() {
+                panic!("Indirect call type mismatch");
+            }
+            if func_in_table.code.is_some() {
+                self.call_internal_func(func_in_table);
+            } else if func_in_table.native_func.is_some() {
+                self.call_external_func(func_in_table);
+            } else {
+                panic!("Unexpected function type");
+            }
         }
 
         fn unreachable(&mut self, _: &Option<Rc<dyn Any>>) {
